@@ -13,13 +13,16 @@ import {
   RefreshCw,
   Network,
   Lock,
-  Zap
+  Zap,
+  Bug,
+  Info
 } from 'lucide-react';
 import { ProposalCard } from './ProposalCard';
 import { CreateProposalDialog } from './CreateProposalDialog';
 import { AdminPanel } from '../admin/AdminPanel';
 import { Proposal, UserProfile } from '@/types/voting';
 import { votingContract } from '@/lib/contract';
+import { debugLog } from '@/lib/fhevm';
 
 interface VotingDashboardProps {
   userProfile: UserProfile;
@@ -29,6 +32,7 @@ interface VotingDashboardProps {
 
 export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDashboardProps) {
   const [refreshing, setRefreshing] = useState(false);
+  const [showDebugInfo, setShowDebugInfo] = useState(false);
 
   const activeProposals = proposals.filter(p => {
     const now = Date.now();
@@ -47,6 +51,7 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
 
   const handleRefresh = async () => {
     setRefreshing(true);
+    debugLog('Dashboard refresh triggered');
     await onRefresh();
     setTimeout(() => setRefreshing(false), 500);
   };
@@ -65,6 +70,16 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
 
   const stats = getStats();
   const isFHEVM = votingContract.isFHEVM();
+  const isDebugMode = import.meta.env.VITE_DEBUG_MODE === 'true';
+
+  useEffect(() => {
+    debugLog('Dashboard mounted', {
+      userProfile,
+      proposalsCount: proposals.length,
+      isFHEVM,
+      isDebugMode
+    });
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -77,6 +92,16 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
           </p>
         </div>
         <div className="flex items-center space-x-2">
+          {isDebugMode && (
+            <Button 
+              variant="outline" 
+              size="sm"
+              onClick={() => setShowDebugInfo(!showDebugInfo)}
+            >
+              <Bug className="h-4 w-4 mr-2" />
+              Debug
+            </Button>
+          )}
           <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
             <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
             Refresh
@@ -86,6 +111,23 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
           )}
         </div>
       </div>
+
+      {/* Debug Info Panel */}
+      {isDebugMode && showDebugInfo && (
+        <Card className="border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950">
+          <CardHeader>
+            <CardTitle className="flex items-center space-x-2 text-yellow-800 dark:text-yellow-200">
+              <Info className="h-5 w-5" />
+              <span>Debug Information</span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <pre className="text-xs overflow-auto max-h-40 bg-yellow-100 dark:bg-yellow-900 p-2 rounded">
+              {JSON.stringify(votingContract.getDebugInfo(), null, 2)}
+            </pre>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Network & FHE Status */}
       <div className="grid gap-4 md:grid-cols-2">
@@ -121,7 +163,7 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
                 <>
                   <Shield className="h-5 w-5 text-yellow-600" />
                   <span className="font-medium text-yellow-900 dark:text-yellow-100">
-                    Standard Encryption
+                    Simulation Mode
                   </span>
                   <Badge variant="secondary" className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
                     Testnet

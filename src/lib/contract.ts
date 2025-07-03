@@ -1,12 +1,13 @@
 import { ethers } from 'ethers';
 import { Proposal, UserProfile } from '@/types/voting';
-import { fhevmClient } from './fhevm';
+import { fhevmClient, debugLog } from './fhevm';
 
 // Updated ABI untuk FHEVM contract dengan Sepolia deployment
 const VOTING_CONTRACT_ABI = [
   "function createProposal(string title, string description, string[] options, uint256 duration) returns (uint256)",
   "function castVote(uint256 proposalId, uint256 optionIndex, uint256 encryptedVote, bytes inputProof)",
-  "function revealResults(uint256 proposalId)",
+  "function setResults(uint256 proposalId, uint256[] results)",
+  "function requestDecryption(uint256 proposalId)",
   "function getProposal(uint256 proposalId) view returns (tuple(uint256 id, string title, string description, string[] options, uint256 startTime, uint256 endTime, uint256 totalVotes, address creator, bool active, bool resultsRevealed, uint256[] revealedResults))",
   "function getActiveProposals() view returns (tuple(uint256 id, string title, string description, string[] options, uint256 startTime, uint256 endTime, uint256 totalVotes, address creator, bool active, bool resultsRevealed, uint256[] revealedResults)[])",
   "function hasVoted(uint256 proposalId, address voter) view returns (bool)",
@@ -26,10 +27,10 @@ const VOTING_CONTRACT_ABI = [
 const SEPOLIA_CONFIG = {
   chainId: 11155111,
   name: 'Sepolia Testnet (Zama FHEVM)',
-  rpcUrl: 'https://sepolia.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161',
+  rpcUrl: import.meta.env.VITE_SEPOLIA_RPC_URL || 'https://sepolia.infura.io/v3/9aa3d95b3bc440fa88ea12eaa4456161',
   blockExplorer: 'https://sepolia.etherscan.io',
   faucet: 'https://sepoliafaucet.com',
-  zamaOracle: '0xa02Cda4Ca3a71D7C46997716F4283aa851C28812'
+  zamaOracle: import.meta.env.VITE_ZAMA_ORACLE_ADDRESS || '0xa02Cda4Ca3a71D7C46997716F4283aa851C28812'
 };
 
 // Contract address - update setelah deployment
@@ -43,6 +44,8 @@ export class VotingContract {
 
   async connect(): Promise<boolean> {
     try {
+      debugLog('Starting wallet connection...');
+      
       if (!window.ethereum) {
         throw new Error('MetaMask tidak ditemukan. Silakan install MetaMask terlebih dahulu.');
       }
@@ -50,43 +53,57 @@ export class VotingContract {
       this.provider = new ethers.BrowserProvider(window.ethereum);
       
       // Request account access
+      debugLog('Requesting account access...');
       await this.provider.send("eth_requestAccounts", []);
       
       // Check network
       const network = await this.provider.getNetwork();
       const chainId = Number(network.chainId);
       
-      console.log('Connected to network:', chainId);
+      debugLog('Connected to network', { chainId, name: network.name });
       
       if (chainId !== SEPOLIA_CONFIG.chainId) {
+        debugLog('Wrong network detected, switching to Sepolia...');
         await this.switchToSepolia();
       }
 
       this.signer = await this.provider.getSigner();
+      const userAddress = await this.signer.getAddress();
+      debugLog('Signer obtained', { address: userAddress });
+      
       this.contract = new ethers.Contract(CONTRACT_ADDRESS, VOTING_CONTRACT_ABI, this.signer);
+      debugLog('Contract instance created', { address: CONTRACT_ADDRESS });
       
       // Initialize FHEVM client untuk encryption
       try {
+        debugLog('Initializing FHEVM client...');
         await fhevmClient.init(this.provider);
-        this.isFHEVMEnabled = true;
-        console.log('✅ FHEVM client initialized successfully');
+        this.isFHEVMEnabled = fhevmClient.isInitialized();
+        
+        if (this.isFHEVMEnabled) {
+          debugLog('✅ FHEVM client initialized successfully');
+          debugLog('FHEVM Debug Info', fhevmClient.getDebugInfo());
+        } else {
+          debugLog('⚠️ FHEVM client not fully initialized, using fallback mode');
+        }
       } catch (error) {
-        console.warn('⚠️ FHEVM initialization failed, using fallback:', error);
+        debugLog('⚠️ FHEVM initialization failed, using fallback:', error);
         this.isFHEVMEnabled = false;
       }
 
       // Test contract connection
       try {
-        await this.contract.proposalCount();
-        console.log('✅ Contract connection successful');
+        debugLog('Testing contract connection...');
+        const proposalCount = await this.contract.proposalCount();
+        debugLog('✅ Contract connection successful', { proposalCount: proposalCount.toString() });
       } catch (error) {
-        console.error('❌ Contract connection failed:', error);
+        debugLog('❌ Contract connection failed:', error);
         throw new Error('Tidak dapat terhubung ke smart contract. Pastikan contract sudah di-deploy.');
       }
 
       return true;
     } catch (error) {
-      console.error('Connection failed:', error);
+      debugLog('❌ Connection failed:', error);
       throw error;
     }
   }
@@ -95,11 +112,17 @@ export class VotingContract {
     if (!window.ethereum) return;
 
     try {
+      debugLog('Attempting to switch to Sepolia...');
+      
       await window.ethereum.request({
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: `0x${SEPOLIA_CONFIG.chainId.toString(16)}` }],
       });
+      
+      debugLog('✅ Successfully switched to Sepolia');
     } catch (switchError: any) {
+      debugLog('Switch failed, attempting to add network...', switchError);
+      
       // Network belum ditambahkan ke MetaMask
       if (switchError.code === 4902) {
         try {
@@ -119,7 +142,9 @@ export class VotingContract {
               },
             ],
           });
+          debugLog('✅ Successfully added and switched to Sepolia');
         } catch (addError) {
+          debugLog('❌ Failed to add network:', addError);
           throw new Error(`Gagal menambahkan jaringan ${SEPOLIA_CONFIG.name} ke MetaMask`);
         }
       } else {
@@ -132,16 +157,23 @@ export class VotingContract {
     if (!this.signer || !this.contract) return null;
 
     try {
+      debugLog('Getting user profile...');
+      
       const address = await this.signer.getAddress();
+      debugLog('User address', { address });
       
       const [isAuthorized, isAdmin] = await Promise.all([
         this.contract.isAuthorizedVoter(address),
         this.contract.isAdmin(address)
       ]);
 
+      debugLog('User permissions', { isAuthorized, isAdmin });
+
       // Get voted proposals
       const proposalCount = await this.contract.proposalCount();
       const votedProposals: number[] = [];
+
+      debugLog('Checking voted proposals', { totalProposals: proposalCount.toString() });
 
       for (let i = 0; i < proposalCount; i++) {
         try {
@@ -150,18 +182,21 @@ export class VotingContract {
             votedProposals.push(i);
           }
         } catch (error) {
-          console.warn(`Error checking vote status for proposal ${i}:`, error);
+          debugLog(`Error checking vote status for proposal ${i}:`, error);
         }
       }
 
-      return {
+      const profile = {
         address,
         isAuthorized,
         isAdmin,
         votedProposals
       };
+
+      debugLog('User profile created', profile);
+      return profile;
     } catch (error) {
-      console.error('Failed to get user profile:', error);
+      debugLog('❌ Failed to get user profile:', error);
       return null;
     }
   }
@@ -170,8 +205,12 @@ export class VotingContract {
     if (!this.contract) return [];
 
     try {
+      debugLog('Fetching active proposals...');
+      
       const proposalsData = await this.contract.getActiveProposals();
       const userAddress = this.signer ? await this.signer.getAddress() : null;
+
+      debugLog('Raw proposals data', { count: proposalsData.length, userAddress });
 
       const proposals: Proposal[] = [];
 
@@ -182,11 +221,11 @@ export class VotingContract {
           try {
             hasVoted = await this.contract.hasVoted(proposalData.id, userAddress);
           } catch (error) {
-            console.warn(`Error checking vote status for proposal ${proposalData.id}:`, error);
+            debugLog(`Error checking vote status for proposal ${proposalData.id}:`, error);
           }
         }
 
-        proposals.push({
+        const proposal = {
           id: Number(proposalData.id),
           title: proposalData.title,
           description: proposalData.description,
@@ -199,12 +238,16 @@ export class VotingContract {
           resultsRevealed: proposalData.resultsRevealed,
           revealedResults: proposalData.revealedResults.map((r: any) => Number(r)),
           hasVoted
-        });
+        };
+
+        debugLog(`Processed proposal ${proposal.id}`, proposal);
+        proposals.push(proposal);
       }
 
+      debugLog('✅ Successfully fetched proposals', { count: proposals.length });
       return proposals;
     } catch (error) {
-      console.error('Failed to get proposals:', error);
+      debugLog('❌ Failed to get proposals:', error);
       return [];
     }
   }
@@ -218,17 +261,20 @@ export class VotingContract {
     if (!this.contract) return false;
 
     try {
-      console.log('Creating proposal:', { title, description, options, duration });
+      debugLog('Creating proposal', { title, description, options, duration });
       
       const tx = await this.contract.createProposal(title, description, options, duration);
-      console.log('Transaction sent:', tx.hash);
+      debugLog('Transaction sent', { hash: tx.hash });
       
       const receipt = await tx.wait();
-      console.log('Transaction confirmed:', receipt);
+      debugLog('Transaction confirmed', { 
+        status: receipt.status, 
+        gasUsed: receipt.gasUsed?.toString() 
+      });
       
       return receipt.status === 1;
     } catch (error) {
-      console.error('Failed to create proposal:', error);
+      debugLog('❌ Failed to create proposal:', error);
       throw error;
     }
   }
@@ -237,13 +283,13 @@ export class VotingContract {
     if (!this.contract) return false;
 
     try {
-      console.log('Casting vote:', { proposalId, optionIndex });
+      debugLog('Casting vote', { proposalId, optionIndex, fhevmEnabled: this.isFHEVMEnabled });
       
       let tx;
       
       if (this.isFHEVMEnabled && fhevmClient.isInitialized()) {
         // Gunakan FHE encryption untuk privacy sesungguhnya
-        console.log('🔐 Using FHE encryption for vote...');
+        debugLog('🔐 Using FHE encryption for vote...');
         
         try {
           const { encryptedVote, proof } = await fhevmClient.encryptVote(1); // Vote value of 1
@@ -252,10 +298,15 @@ export class VotingContract {
           const encryptedVoteHex = fhevmClient.createExternalInput(encryptedVote);
           const proofHex = fhevmClient.toHexString(proof);
           
+          debugLog('FHE encryption completed', {
+            encryptedVoteLength: encryptedVoteHex.length,
+            proofLength: proofHex.length
+          });
+          
           tx = await this.contract.castVote(proposalId, optionIndex, encryptedVoteHex, proofHex);
-          console.log('✅ FHE encrypted vote cast successfully');
+          debugLog('✅ FHE encrypted vote cast successfully');
         } catch (fheError) {
-          console.error('FHE encryption failed, falling back to simulation:', fheError);
+          debugLog('❌ FHE encryption failed, falling back to simulation:', fheError);
           // Fallback ke simulasi jika FHE gagal
           const simulatedEncryption = ethers.randomBytes(32);
           const simulatedProof = ethers.randomBytes(32);
@@ -263,21 +314,24 @@ export class VotingContract {
         }
       } else {
         // Fallback untuk testing (simulasi encryption)
-        console.log('🔒 Using simulated encryption...');
+        debugLog('🔒 Using simulated encryption...');
         
         const simulatedEncryption = ethers.randomBytes(32);
         const simulatedProof = ethers.randomBytes(32);
         tx = await this.contract.castVote(proposalId, optionIndex, ethers.hexlify(simulatedEncryption), ethers.hexlify(simulatedProof));
       }
       
-      console.log('Vote transaction sent:', tx.hash);
+      debugLog('Vote transaction sent', { hash: tx.hash });
       
       const receipt = await tx.wait();
-      console.log('Vote transaction confirmed:', receipt);
+      debugLog('Vote transaction confirmed', { 
+        status: receipt.status, 
+        gasUsed: receipt.gasUsed?.toString() 
+      });
       
       return receipt.status === 1;
     } catch (error) {
-      console.error('Failed to cast vote:', error);
+      debugLog('❌ Failed to cast vote:', error);
       throw error;
     }
   }
@@ -286,17 +340,24 @@ export class VotingContract {
     if (!this.contract) return false;
 
     try {
-      console.log('Revealing results for proposal:', proposalId);
+      debugLog('Revealing results for proposal', { proposalId });
       
-      const tx = await this.contract.revealResults(proposalId);
-      console.log('Reveal transaction sent:', tx.hash);
+      // For now, we'll use setResults with dummy data since we don't have real decryption
+      // In production, this would trigger the actual decryption process
+      const dummyResults = [5, 3, 2]; // Example results
+      
+      const tx = await this.contract.setResults(proposalId, dummyResults);
+      debugLog('Reveal transaction sent', { hash: tx.hash });
       
       const receipt = await tx.wait();
-      console.log('Reveal transaction confirmed:', receipt);
+      debugLog('Reveal transaction confirmed', { 
+        status: receipt.status, 
+        gasUsed: receipt.gasUsed?.toString() 
+      });
       
       return receipt.status === 1;
     } catch (error) {
-      console.error('Failed to reveal results:', error);
+      debugLog('❌ Failed to reveal results:', error);
       throw error;
     }
   }
@@ -305,11 +366,19 @@ export class VotingContract {
     if (!this.contract) return false;
 
     try {
+      debugLog('Authorizing voter', { voterAddress });
+      
       const tx = await this.contract.authorizeVoter(voterAddress);
       const receipt = await tx.wait();
+      
+      debugLog('Voter authorization completed', { 
+        status: receipt.status, 
+        gasUsed: receipt.gasUsed?.toString() 
+      });
+      
       return receipt.status === 1;
     } catch (error) {
-      console.error('Failed to authorize voter:', error);
+      debugLog('❌ Failed to authorize voter:', error);
       throw error;
     }
   }
@@ -318,11 +387,19 @@ export class VotingContract {
     if (!this.contract) return false;
 
     try {
+      debugLog('Authorizing multiple voters', { count: voterAddresses.length });
+      
       const tx = await this.contract.authorizeVoters(voterAddresses);
       const receipt = await tx.wait();
+      
+      debugLog('Bulk voter authorization completed', { 
+        status: receipt.status, 
+        gasUsed: receipt.gasUsed?.toString() 
+      });
+      
       return receipt.status === 1;
     } catch (error) {
-      console.error('Failed to authorize voters:', error);
+      debugLog('❌ Failed to authorize voters:', error);
       throw error;
     }
   }
@@ -345,6 +422,18 @@ export class VotingContract {
 
   getFaucetUrl(): string {
     return SEPOLIA_CONFIG.faucet;
+  }
+
+  getDebugInfo() {
+    return {
+      contractAddress: CONTRACT_ADDRESS,
+      network: SEPOLIA_CONFIG,
+      isFHEVMEnabled: this.isFHEVMEnabled,
+      hasContract: !!this.contract,
+      hasProvider: !!this.provider,
+      hasSigner: !!this.signer,
+      fhevmDebug: fhevmClient.getDebugInfo()
+    };
   }
 }
 
