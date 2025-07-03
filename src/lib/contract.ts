@@ -10,6 +10,8 @@ const VOTING_CONTRACT_ABI = [
   "function isAuthorizedVoter(address voter) view returns (bool)",
   "function isAdmin(address admin) view returns (bool)",
   "function hasVoted(uint256 proposalId, address voter) view returns (bool)",
+  "function getProposal(uint256 proposalId) view returns (tuple(uint256 id, string title, string description, string[] options, uint256 startTime, uint256 endTime, uint256 totalVotes, address creator, bool active, bool resultsRevealed, uint256[] revealedResults))",
+  "function getActiveProposals() view returns (tuple(uint256 id, string title, string description, string[] options, uint256 startTime, uint256 endTime, uint256 totalVotes, address creator, bool active, bool resultsRevealed, uint256[] revealedResults)[])",
   
   // Write functions
   "function authorizeVoter(address voter)",
@@ -36,6 +38,52 @@ const SEPOLIA_CONFIG = {
 
 // Contract address - MUST be updated with actual deployed contract
 const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS || "0x0000000000000000000000000000000000000000";
+
+// Mock proposals for simulation mode
+const MOCK_PROPOSALS: Proposal[] = [
+  {
+    id: 0,
+    title: "Increase DAO Treasury Allocation",
+    description: "This proposal suggests increasing the DAO treasury allocation by 10% to fund more community initiatives and development projects. The additional funds would be used for grants, partnerships, and infrastructure improvements.",
+    options: ["Yes, increase by 10%", "No, keep current allocation", "Increase by 5% only", "Decrease by 5%"],
+    startTime: Date.now() - 3600000, // 1 hour ago
+    endTime: Date.now() + 86400000, // 24 hours from now
+    totalVotes: 12,
+    creator: "0x1234567890123456789012345678901234567890",
+    active: true,
+    resultsRevealed: false,
+    revealedResults: [],
+    hasVoted: false
+  },
+  {
+    id: 1,
+    title: "Implement New Governance Token Staking",
+    description: "Proposal to implement a new staking mechanism for governance tokens that would provide additional voting power and rewards for long-term holders. This would encourage more active participation in DAO governance.",
+    options: ["Implement with 2x voting power", "Implement with 1.5x voting power", "No staking mechanism", "Different reward structure"],
+    startTime: Date.now() + 3600000, // 1 hour from now
+    endTime: Date.now() + 172800000, // 48 hours from now
+    totalVotes: 0,
+    creator: "0x1234567890123456789012345678901234567890",
+    active: true,
+    resultsRevealed: false,
+    revealedResults: [],
+    hasVoted: false
+  },
+  {
+    id: 2,
+    title: "Partnership with DeFi Protocol",
+    description: "Vote on whether the DAO should enter into a strategic partnership with a major DeFi protocol to expand our ecosystem and provide more utility for token holders.",
+    options: ["Approve partnership", "Reject partnership", "Request more details", "Negotiate better terms"],
+    startTime: Date.now() - 172800000, // 48 hours ago
+    endTime: Date.now() - 3600000, // 1 hour ago (ended)
+    totalVotes: 45,
+    creator: "0x1234567890123456789012345678901234567890",
+    active: true,
+    resultsRevealed: true,
+    revealedResults: [28, 12, 3, 2],
+    hasVoted: true
+  }
+];
 
 export class VotingContract {
   private contract: ethers.Contract | null = null;
@@ -206,7 +254,7 @@ export class VotingContract {
           address,
           isAuthorized: true,
           isAdmin: true,
-          votedProposals: []
+          votedProposals: [2] // User has voted on proposal 2
         };
         debugLog('Simulation mode: returning mock profile', profile);
         return profile;
@@ -253,23 +301,12 @@ export class VotingContract {
 
   async getActiveProposals(): Promise<Proposal[]> {
     if (this.isSimulationMode) {
-      // Return mock proposals for simulation
-      const mockProposals: Proposal[] = [
-        {
-          id: 0,
-          title: "Demo Proposal: Increase DAO Treasury Allocation",
-          description: "This is a demonstration proposal to show how the FHE voting system works. In a real scenario, this would be a governance decision.",
-          options: ["Yes, increase by 10%", "No, keep current", "Increase by 5%"],
-          startTime: Date.now() - 3600000, // 1 hour ago
-          endTime: Date.now() + 86400000, // 24 hours from now
-          totalVotes: 0,
-          creator: await this.signer?.getAddress() || "0x0000000000000000000000000000000000000000",
-          active: true,
-          resultsRevealed: false,
-          revealedResults: [],
-          hasVoted: false
-        }
-      ];
+      // Return mock proposals for simulation with user vote status
+      const userAddress = this.signer ? await this.signer.getAddress() : null;
+      const mockProposals = MOCK_PROPOSALS.map(proposal => ({
+        ...proposal,
+        hasVoted: proposal.id === 2 // User has voted on proposal 2
+      }));
       
       debugLog('Simulation mode: returning mock proposals', mockProposals);
       return mockProposals;
@@ -280,10 +317,40 @@ export class VotingContract {
     try {
       debugLog('Fetching active proposals...');
       
-      // For now, return empty array since getActiveProposals might not be implemented
-      // In a real scenario, you would implement this function in the contract
-      debugLog('⚠️ getActiveProposals not implemented, returning empty array');
-      return [];
+      const proposalsData = await this.contract.getActiveProposals();
+      const userAddress = this.signer ? await this.signer.getAddress() : null;
+
+      const proposals: Proposal[] = [];
+
+      for (const proposalData of proposalsData) {
+        let hasVoted = false;
+        
+        if (userAddress) {
+          try {
+            hasVoted = await this.contract.hasVoted(proposalData.id, userAddress);
+          } catch (error) {
+            debugLog(`Error checking vote status for proposal ${proposalData.id}:`, error);
+          }
+        }
+
+        proposals.push({
+          id: Number(proposalData.id),
+          title: proposalData.title,
+          description: proposalData.description,
+          options: proposalData.options,
+          startTime: Number(proposalData.startTime) * 1000, // Convert to milliseconds
+          endTime: Number(proposalData.endTime) * 1000,
+          totalVotes: Number(proposalData.totalVotes),
+          creator: proposalData.creator,
+          active: proposalData.active,
+          resultsRevealed: proposalData.resultsRevealed,
+          revealedResults: proposalData.revealedResults.map((r: any) => Number(r)),
+          hasVoted
+        });
+      }
+
+      debugLog('Active proposals fetched', { count: proposals.length });
+      return proposals;
     } catch (error) {
       debugLog('❌ Failed to get proposals:', error);
       return [];
@@ -300,6 +367,26 @@ export class VotingContract {
       debugLog('🔧 Simulation mode: creating proposal', { title, description, options, duration });
       // Simulate successful creation
       await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Add new proposal to mock data
+      const newProposal: Proposal = {
+        id: MOCK_PROPOSALS.length,
+        title,
+        description,
+        options,
+        startTime: Date.now(),
+        endTime: Date.now() + (duration * 60 * 60 * 1000), // Convert hours to milliseconds
+        totalVotes: 0,
+        creator: await this.signer?.getAddress() || "0x0000000000000000000000000000000000000000",
+        active: true,
+        resultsRevealed: false,
+        revealedResults: [],
+        hasVoted: false
+      };
+      
+      MOCK_PROPOSALS.push(newProposal);
+      debugLog('Mock proposal added', newProposal);
+      
       return true;
     }
 
@@ -333,6 +420,13 @@ export class VotingContract {
         encryptedVoteLength: encryptedVote.length,
         proofLength: proof.length 
       });
+      
+      // Update mock proposal
+      const proposal = MOCK_PROPOSALS.find(p => p.id === proposalId);
+      if (proposal) {
+        proposal.hasVoted = true;
+        proposal.totalVotes++;
+      }
       
       // Simulate transaction delay
       await new Promise(resolve => setTimeout(resolve, 3000));
@@ -398,6 +492,22 @@ export class VotingContract {
   async revealResults(proposalId: number): Promise<boolean> {
     if (this.isSimulationMode) {
       debugLog('🔧 Simulation mode: revealing results', { proposalId });
+      
+      // Update mock proposal with results
+      const proposal = MOCK_PROPOSALS.find(p => p.id === proposalId);
+      if (proposal && !proposal.resultsRevealed) {
+        proposal.resultsRevealed = true;
+        // Generate random results based on total votes
+        const totalVotes = proposal.totalVotes;
+        const results = proposal.options.map(() => Math.floor(Math.random() * totalVotes));
+        // Ensure total matches
+        const sum = results.reduce((a, b) => a + b, 0);
+        if (sum !== totalVotes && totalVotes > 0) {
+          results[0] += totalVotes - sum;
+        }
+        proposal.revealedResults = results;
+      }
+      
       // Simulate result revelation
       await new Promise(resolve => setTimeout(resolve, 2000));
       return true;
@@ -515,6 +625,7 @@ export class VotingContract {
       hasContract: !!this.contract,
       hasProvider: !!this.provider,
       hasSigner: !!this.signer,
+      mockProposalsCount: MOCK_PROPOSALS.length,
       fhevmDebug: fhevmClient.getDebugInfo()
     };
   }
