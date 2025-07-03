@@ -15,7 +15,10 @@ import {
   Lock,
   Zap,
   Bug,
-  Info
+  Info,
+  AlertTriangle,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 import { ProposalCard } from './ProposalCard';
 import { CreateProposalDialog } from './CreateProposalDialog';
@@ -33,6 +36,7 @@ interface VotingDashboardProps {
 export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDashboardProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [showDebugInfo, setShowDebugInfo] = useState(false);
+  const [gatewayStatus, setGatewayStatus] = useState<{ [key: string]: boolean }>({});
 
   const activeProposals = proposals.filter(p => {
     const now = Date.now();
@@ -56,6 +60,12 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
     setTimeout(() => setRefreshing(false), 500);
   };
 
+  const testGateways = async () => {
+    debugLog('Testing gateway connectivity...');
+    const status = await votingContract.testGateways();
+    setGatewayStatus(status);
+  };
+
   const getStats = () => {
     const totalVotes = proposals.reduce((sum, p) => sum + p.totalVotes, 0);
     const userVotes = proposals.filter(p => p.hasVoted).length;
@@ -70,6 +80,7 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
 
   const stats = getStats();
   const isFHEVM = votingContract.isFHEVM();
+  const isSimulation = votingContract.isSimulation();
   const isDebugMode = import.meta.env.VITE_DEBUG_MODE === 'true';
 
   useEffect(() => {
@@ -77,9 +88,42 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
       userProfile,
       proposalsCount: proposals.length,
       isFHEVM,
+      isSimulation,
       isDebugMode
     });
+
+    // Test gateways on mount
+    if (isDebugMode) {
+      testGateways();
+    }
   }, []);
+
+  const getConnectionStatus = () => {
+    if (isSimulation) {
+      return {
+        color: 'yellow',
+        icon: AlertTriangle,
+        text: 'Simulation Mode',
+        description: 'Contract not deployed or gateway offline'
+      };
+    } else if (isFHEVM) {
+      return {
+        color: 'green',
+        icon: Lock,
+        text: 'FHE Encryption Active',
+        description: 'Full privacy protection enabled'
+      };
+    } else {
+      return {
+        color: 'blue',
+        icon: Shield,
+        text: 'Standard Mode',
+        description: 'Basic encryption active'
+      };
+    }
+  };
+
+  const connectionStatus = getConnectionStatus();
 
   return (
     <div className="space-y-6">
@@ -88,19 +132,29 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
         <div>
           <h2 className="text-3xl font-bold tracking-tight">DAO Governance</h2>
           <p className="text-muted-foreground">
-            Participate in {isFHEVM ? 'fully encrypted' : 'secure'} voting for community proposals
+            Participate in {isSimulation ? 'simulated' : isFHEVM ? 'fully encrypted' : 'secure'} voting for community proposals
           </p>
         </div>
         <div className="flex items-center space-x-2">
           {isDebugMode && (
-            <Button 
-              variant="outline" 
-              size="sm"
-              onClick={() => setShowDebugInfo(!showDebugInfo)}
-            >
-              <Bug className="h-4 w-4 mr-2" />
-              Debug
-            </Button>
+            <>
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={testGateways}
+              >
+                <Wifi className="h-4 w-4 mr-2" />
+                Test Gateways
+              </Button>
+              <Button 
+                variant="outline" 
+                size="sm"
+                onClick={() => setShowDebugInfo(!showDebugInfo)}
+              >
+                <Bug className="h-4 w-4 mr-2" />
+                Debug
+              </Button>
+            </>
           )}
           <Button variant="outline" onClick={handleRefresh} disabled={refreshing}>
             <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
@@ -112,19 +166,61 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
         </div>
       </div>
 
+      {/* Simulation Mode Warning */}
+      {isSimulation && (
+        <Card className="border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950">
+          <CardContent className="pt-6">
+            <div className="flex items-center space-x-2">
+              <AlertTriangle className="h-5 w-5 text-yellow-600" />
+              <div>
+                <span className="font-medium text-yellow-900 dark:text-yellow-100">
+                  Running in Simulation Mode
+                </span>
+                <p className="text-sm text-yellow-700 dark:text-yellow-300 mt-1">
+                  The smart contract is not deployed or Zama gateways are offline. All operations are simulated for demonstration purposes.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Debug Info Panel */}
       {isDebugMode && showDebugInfo && (
-        <Card className="border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950">
+        <Card className="border-blue-200 bg-blue-50 dark:border-blue-800 dark:bg-blue-950">
           <CardHeader>
-            <CardTitle className="flex items-center space-x-2 text-yellow-800 dark:text-yellow-200">
+            <CardTitle className="flex items-center space-x-2 text-blue-800 dark:text-blue-200">
               <Info className="h-5 w-5" />
               <span>Debug Information</span>
             </CardTitle>
           </CardHeader>
-          <CardContent>
-            <pre className="text-xs overflow-auto max-h-40 bg-yellow-100 dark:bg-yellow-900 p-2 rounded">
-              {JSON.stringify(votingContract.getDebugInfo(), null, 2)}
-            </pre>
+          <CardContent className="space-y-4">
+            <div>
+              <h4 className="font-medium mb-2">Contract Debug Info:</h4>
+              <pre className="text-xs overflow-auto max-h-40 bg-blue-100 dark:bg-blue-900 p-2 rounded">
+                {JSON.stringify(votingContract.getDebugInfo(), null, 2)}
+              </pre>
+            </div>
+            
+            {Object.keys(gatewayStatus).length > 0 && (
+              <div>
+                <h4 className="font-medium mb-2">Gateway Status:</h4>
+                <div className="space-y-1">
+                  {Object.entries(gatewayStatus).map(([gateway, status]) => (
+                    <div key={gateway} className="flex items-center space-x-2 text-xs">
+                      {status ? (
+                        <Wifi className="h-3 w-3 text-green-500" />
+                      ) : (
+                        <WifiOff className="h-3 w-3 text-red-500" />
+                      )}
+                      <span className={status ? 'text-green-700' : 'text-red-700'}>
+                        {gateway}: {status ? 'Online' : 'Offline'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -139,36 +235,29 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
                 Connected to {votingContract.getCurrentNetwork()?.name || 'Unknown Network'}
               </span>
               <Badge variant="secondary" className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
-                Contract: {votingContract.getContractAddress().slice(0, 8)}...
+                {isSimulation ? 'Simulation' : 'Live'}
               </Badge>
             </div>
           </CardContent>
         </Card>
 
-        <Card className={`${isFHEVM ? 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950' : 'border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950'}`}>
+        <Card className={`border-${connectionStatus.color}-200 bg-${connectionStatus.color}-50 dark:border-${connectionStatus.color}-800 dark:bg-${connectionStatus.color}-950`}>
           <CardContent className="pt-6">
             <div className="flex items-center space-x-2">
-              {isFHEVM ? (
-                <>
-                  <Lock className="h-5 w-5 text-green-600" />
-                  <span className="font-medium text-green-900 dark:text-green-100">
-                    FHE Encryption Active
-                  </span>
-                  <Badge variant="secondary" className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
-                    <Zap className="h-3 w-3 mr-1" />
-                    FHEVM
-                  </Badge>
-                </>
-              ) : (
-                <>
-                  <Shield className="h-5 w-5 text-yellow-600" />
-                  <span className="font-medium text-yellow-900 dark:text-yellow-100">
-                    Simulation Mode
-                  </span>
-                  <Badge variant="secondary" className="bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">
-                    Testnet
-                  </Badge>
-                </>
+              <connectionStatus.icon className={`h-5 w-5 text-${connectionStatus.color}-600`} />
+              <div>
+                <span className={`font-medium text-${connectionStatus.color}-900 dark:text-${connectionStatus.color}-100`}>
+                  {connectionStatus.text}
+                </span>
+                <p className={`text-xs text-${connectionStatus.color}-700 dark:text-${connectionStatus.color}-300 mt-1`}>
+                  {connectionStatus.description}
+                </p>
+              </div>
+              {isFHEVM && (
+                <Badge variant="secondary" className={`bg-${connectionStatus.color}-100 text-${connectionStatus.color}-800 dark:bg-${connectionStatus.color}-900 dark:text-${connectionStatus.color}-200`}>
+                  <Zap className="h-3 w-3 mr-1" />
+                  FHEVM
+                </Badge>
               )}
             </div>
           </CardContent>
@@ -211,7 +300,7 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
           <CardContent>
             <div className="text-2xl font-bold">{stats.totalVotes}</div>
             <p className="text-xs text-muted-foreground">
-              {isFHEVM ? 'Encrypted votes' : 'Across all proposals'}
+              {isSimulation ? 'Simulated votes' : isFHEVM ? 'Encrypted votes' : 'Across all proposals'}
             </p>
           </CardContent>
         </Card>
@@ -224,7 +313,7 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
           <CardContent>
             <div className="text-2xl font-bold">{stats.userVotes}</div>
             <p className="text-xs text-muted-foreground">
-              {isFHEVM ? 'Encrypted votes cast' : 'Votes cast by you'}
+              {isSimulation ? 'Simulated votes cast' : isFHEVM ? 'Encrypted votes cast' : 'Votes cast by you'}
             </p>
           </CardContent>
         </Card>
@@ -271,7 +360,10 @@ export function VotingDashboard({ userProfile, proposals, onRefresh }: VotingDas
                 <Vote className="h-12 w-12 text-muted-foreground mb-4" />
                 <h3 className="text-lg font-medium">No Active Proposals</h3>
                 <p className="text-muted-foreground text-center">
-                  There are currently no active proposals accepting votes.
+                  {isSimulation 
+                    ? "In simulation mode, you can create demo proposals to test the system."
+                    : "There are currently no active proposals accepting votes."
+                  }
                 </p>
                 {userProfile.isAdmin && (
                   <div className="mt-4">
